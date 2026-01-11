@@ -15,10 +15,7 @@ import (
 	"github.com/davidseybold/unifi-dns-sync/dnsprovider"
 )
 
-var ()
-
-// Client holds the configuration for the API
-type Client struct {
+type Provider struct {
 	BaseURL    string
 	Token      string
 	HTTPClient *http.Client
@@ -47,7 +44,7 @@ func loadConfig() (config, error) {
 	return c, err
 }
 
-func New() (*Client, error) {
+func New() (*Provider, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
@@ -57,7 +54,7 @@ func New() (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{
+	return &Provider{
 		BaseURL: cfg.BaseURL,
 		Token:   cfg.APIToken,
 		HTTPClient: &http.Client{
@@ -66,7 +63,7 @@ func New() (*Client, error) {
 	}, nil
 }
 
-func (c *Client) listZones(ctx context.Context) ([]Zone, error) {
+func (c *Provider) listZones(ctx context.Context) ([]Zone, error) {
 
 	response, err := doRequest[ListZonesResponse](ctx, c, "/api/zones/list", url.Values{})
 	if err != nil {
@@ -77,7 +74,7 @@ func (c *Client) listZones(ctx context.Context) ([]Zone, error) {
 }
 
 // GetZone fetches details for a specific zone
-func (c *Client) GetZone(ctx context.Context, zoneName string) (dnsprovider.Zone, error) {
+func (c *Provider) GetZone(ctx context.Context, zoneName string) (dnsprovider.Zone, error) {
 	zones, err := c.listZones(ctx)
 	if err != nil {
 		return dnsprovider.Zone{}, err
@@ -92,7 +89,7 @@ func (c *Client) GetZone(ctx context.Context, zoneName string) (dnsprovider.Zone
 	return dnsprovider.Zone{}, dnsprovider.ErrZoneNotFound
 }
 
-func (c *Client) UpsertRecord(ctx context.Context, zone string, record dnsprovider.Record) error {
+func (c *Provider) UpsertRecord(ctx context.Context, zone string, record dnsprovider.Record) error {
 	params := url.Values{}
 	params.Add("zone", zone)
 	params.Add("domain", record.Name)
@@ -110,7 +107,7 @@ func (c *Client) UpsertRecord(ctx context.Context, zone string, record dnsprovid
 }
 
 // ListRecords returns all records for a zone
-func (c *Client) ListRecords(ctx context.Context, zone string) ([]dnsprovider.Record, error) {
+func (c *Provider) ListRecords(ctx context.Context, zone string) ([]dnsprovider.Record, error) {
 	params := url.Values{}
 	params.Add("zone", zone)
 	params.Add("domain", zone)
@@ -130,7 +127,7 @@ func (c *Client) ListRecords(ctx context.Context, zone string) ([]dnsprovider.Re
 }
 
 // // DeleteRecord removes a record from a zone
-func (c *Client) DeleteRecord(ctx context.Context, zone string, record dnsprovider.Record) error {
+func (c *Provider) DeleteRecord(ctx context.Context, zone string, record dnsprovider.Record) error {
 	params := url.Values{}
 	params.Add("zone", zone)
 	params.Add("domain", record.Name)
@@ -142,7 +139,7 @@ func (c *Client) DeleteRecord(ctx context.Context, zone string, record dnsprovid
 	return err
 }
 
-func doRequest[T any](ctx context.Context, c *Client, path string, params url.Values) (*T, error) {
+func doRequest[T any](ctx context.Context, c *Provider, path string, params url.Values) (*T, error) {
 	params.Add("token", c.Token)
 
 	fullURL := fmt.Sprintf("%s%s?%s", c.BaseURL, path, params.Encode())
