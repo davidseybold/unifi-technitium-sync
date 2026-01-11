@@ -1,4 +1,4 @@
-module github.com/davidseybold/unifi-sync
+module github.com/davidseybold/unifi-dns-sync
 
 go 1.24.2
 

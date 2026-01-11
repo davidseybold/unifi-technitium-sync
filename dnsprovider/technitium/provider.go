@@ -44,7 +44,7 @@ func loadConfig() (config, error) {
 	return c, err
 }
 
-func New() (*Provider, error) {
+func NewProvider() (*Provider, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err

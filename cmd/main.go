@@ -70,7 +70,7 @@ func main() {
 func getProvider(name string) (syncer.DNSProvider, error) {
 	switch name {
 	case "technitium":
-		p, err := technitium.New()
+		p, err := technitium.NewProvider()
 		return p, err
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", name)
