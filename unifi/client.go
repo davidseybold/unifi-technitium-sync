@@ -49,7 +49,7 @@ type NetworkClient struct {
 	MacAddress string `json:"macAddress"`
 }
 
-func (c *Client) ListClients(ctx context.Context) ([]NetworkClient, error) {
+func (c *Client) ListConnectedClients(ctx context.Context) ([]NetworkClient, error) {
 	allClients := []NetworkClient{}
 	limit := 50
 	offset := 0
@@ -59,6 +59,7 @@ func (c *Client) ListClients(ctx context.Context) ([]NetworkClient, error) {
 		params := url.Values{}
 		params.Set("limit", fmt.Sprintf("%d", limit))
 		params.Set("offset", fmt.Sprintf("%d", offset))
+		params.Set("filter", "ipAddress.isNotNull()")
 
 		var response ListClientsResponse
 		if err := c.doRequest(ctx, "GET", endpoint, params, &response); err != nil {
@@ -80,12 +81,12 @@ func (c *Client) ListClients(ctx context.Context) ([]NetworkClient, error) {
 func (c *Client) doRequest(ctx context.Context, method string, path string, params url.Values, out any) error {
 	fullURL := fmt.Sprintf("%s%s", c.BaseURL, path)
 
-	req, err := http.NewRequest(method, fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, nil)
 	if err != nil {
 		return err
 	}
 
-	req = req.WithContext(ctx)
+	req.URL.RawQuery = params.Encode()
 
 	req.Header.Set("X-API-KEY", c.APIKey)
 	req.Header.Set("Accept", "application/json")
@@ -95,6 +96,10 @@ func (c *Client) doRequest(ctx context.Context, method string, path string, para
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("request failed with status code %d", resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

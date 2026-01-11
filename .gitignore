@@ -31,3 +31,5 @@ coverage.txt
 
 # --- System ---
 .DS_Store
+
+state.json

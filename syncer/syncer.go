@@ -2,10 +2,13 @@ package syncer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/davidseybold/unifi-technitium-sync/technitium"
 	"github.com/davidseybold/unifi-technitium-sync/unifi"
@@ -14,81 +17,152 @@ import (
 type Syncer struct {
 	uc     *unifi.Client
 	tc     *technitium.Client
-	zone   string
+	config Config
 	logger *slog.Logger
 }
 
-func New(uc *unifi.Client, tc *technitium.Client, syncZone string, logger *slog.Logger) *Syncer {
+type Config struct {
+	SyncZone       string
+	ClientWaitTime time.Duration
+	StateDir       string
+}
+
+func New(uc *unifi.Client, tc *technitium.Client, config Config, logger *slog.Logger) *Syncer {
 	return &Syncer{
 		uc:     uc,
 		tc:     tc,
-		zone:   syncZone,
+		config: config,
 		logger: logger,
 	}
 }
 
-func (s *Syncer) Run(ctx context.Context) error {
+func (s *Syncer) Run(ctx context.Context) (*SyncResult, error) {
 
-	if s.zone == "" {
-		return fmt.Errorf("zone is required")
+	if s.config.SyncZone == "" {
+		return nil, fmt.Errorf("zone is required")
 	}
 
 	if s.logger == nil {
 		s.logger = slog.New(slog.DiscardHandler)
 	}
 
-	_, err := s.tc.GetZone(ctx, s.zone)
+	_, err := s.tc.GetZone(ctx, s.config.SyncZone)
 	if err != nil {
-		return fmt.Errorf("failed to validate sync zone exists: %v", err)
+		return nil, fmt.Errorf("failed to validate sync zone exists: %v", err)
 	}
 
-	existingRecords, err := s.getExistingRecords(ctx)
+	state, err := s.loadState()
 	if err != nil {
-		return fmt.Errorf("failed to get existing records: %v", err)
+		return nil, fmt.Errorf("failed to load state: %v", err)
 	}
 
-	clientRecords, err := s.getUnifiRecords(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get unifi records: %v", err)
-	}
-
-	addRecords, deleteRecords := s.calculateChanges(existingRecords, clientRecords)
-
-	for _, r := range deleteRecords {
-		err := s.tc.DeleteRecord(ctx, s.zone, r.Name, r.Type, *r.RData.IPAddress)
-		if err != nil {
-			s.logger.Error("error deleting record", "record", r.Name, "error", err)
-		}
-		s.logger.Info("deleted record", "record", r.Name)
-	}
-
-	for _, r := range addRecords {
-		err := s.tc.AddRecord(ctx, s.zone, r.Name, *r.RData.IPAddress, r.TTL, r.Comments)
-		if err != nil {
-			s.logger.Error("error upserting record", "record", r.Name, "error", err)
-		}
-		s.logger.Info("upserted record", "record", r.Name)
-	}
-
-	return nil
-}
-
-func (s *Syncer) getUnifiRecords(ctx context.Context) (map[string]technitium.Record, error) {
-	unifiClients, err := s.uc.ListClients(ctx)
+	unifiClients, err := s.uc.ListConnectedClients(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list clients: %v", err)
 	}
 
+	newState, err := s.updateState(state, unifiClients)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update state: %v", err)
+	}
+
+	existingRecords, err := s.getExistingRecords(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get existing records: %v", err)
+	}
+
+	clientRecords, err := s.convertClientsToRecords(ctx, newState.Clients)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get unifi records: %v", err)
+	}
+
+	changes := s.calculateChanges(existingRecords, clientRecords)
+
+	result := s.processChanges(ctx, changes)
+
+	err = s.persistState(newState)
+	if err != nil {
+		s.logger.Error("failed to persist state", "error", err)
+	}
+
+	return &result, nil
+}
+
+type changes struct {
+	Add    []technitium.Record
+	Delete []technitium.Record
+}
+
+type SyncResult struct {
+	AddSuccess int
+	AddFailed  int
+
+	DeleteSuccess int
+	DeleteFailed  int
+}
+
+type state struct {
+	Clients []client `json:"clients"`
+}
+
+func (s *state) GetClientMacLookup() map[string]client {
+	clients := map[string]client{}
+	for _, client := range s.Clients {
+		clients[client.MACAddress] = client
+	}
+	return clients
+}
+
+type client struct {
+	Name       string    `json:"name"`
+	MACAddress string    `json:"macAddress"`
+	IPAddress  string    `json:"ipAddress"`
+	LastSeen   time.Time `json:"lastSeen"`
+}
+
+func (s *Syncer) loadState() (*state, error) {
+
+	if _, err := os.Stat(s.getStateFileName()); os.IsNotExist(err) {
+		return &state{Clients: []client{}}, nil
+	}
+
+	data, err := os.ReadFile(s.getStateFileName())
+	if err != nil {
+		return nil, fmt.Errorf("failed to read state file: %v", err)
+	}
+
+	var state state
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal state file: %v", err)
+	}
+
+	return &state, nil
+}
+
+func (s *Syncer) persistState(state *state) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("failed to marshal state: %v", err)
+	}
+
+	return os.WriteFile(s.getStateFileName(), data, 0644)
+}
+
+func (s *Syncer) getStateFileName() string {
+	return s.config.StateDir + "/state.json"
+}
+
+func (s *Syncer) convertClientsToRecords(ctx context.Context, clients []client) (map[string]technitium.Record, error) {
 	clientRecords := map[string]technitium.Record{}
-	for _, client := range unifiClients {
+	for _, client := range clients {
 		sanitizedUnifiName := sanitizeDNS(client.Name)
-		name := fmt.Sprintf("%s.%s", sanitizedUnifiName, s.zone)
+		name := fmt.Sprintf("%s.%s", sanitizedUnifiName, s.config.SyncZone)
 
 		clientRecords[name] = technitium.Record{
 			Name:     name,
 			Type:     "A",
 			TTL:      3600,
-			Comments: client.MacAddress,
+			Comments: client.MACAddress,
 			RData:    technitium.RData{IPAddress: &client.IPAddress},
 		}
 	}
@@ -96,8 +170,39 @@ func (s *Syncer) getUnifiRecords(ctx context.Context) (map[string]technitium.Rec
 	return clientRecords, nil
 }
 
+func (s *Syncer) updateState(currentState *state, currentClients []unifi.NetworkClient) (*state, error) {
+	newClientMap := map[string]client{}
+
+	for _, c := range currentClients {
+		newClientMap[c.MacAddress] = client{
+			Name:       c.Name,
+			MACAddress: c.MacAddress,
+			IPAddress:  c.IPAddress,
+			LastSeen:   time.Now(),
+		}
+	}
+
+	for _, c := range currentState.Clients {
+		lastSeenDiff := time.Since(c.LastSeen)
+		if lastSeenDiff > s.config.ClientWaitTime {
+			continue
+		}
+
+		if _, ok := newClientMap[c.MACAddress]; !ok {
+			newClientMap[c.MACAddress] = c
+		}
+	}
+
+	newClients := []client{}
+	for _, c := range newClientMap {
+		newClients = append(newClients, c)
+	}
+
+	return &state{Clients: newClients}, nil
+}
+
 func (s *Syncer) getExistingRecords(ctx context.Context) ([]technitium.Record, error) {
-	records, err := s.tc.ListRecords(ctx, s.zone)
+	records, err := s.tc.ListRecords(ctx, s.config.SyncZone)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list existing records: %v", err)
 	}
@@ -107,7 +212,7 @@ func (s *Syncer) getExistingRecords(ctx context.Context) ([]technitium.Record, e
 	return aRecords, nil
 }
 
-func (s *Syncer) calculateChanges(existingRecords []technitium.Record, clientRecords map[string]technitium.Record) ([]technitium.Record, []technitium.Record) {
+func (s *Syncer) calculateChanges(existingRecords []technitium.Record, clientRecords map[string]technitium.Record) changes {
 	addRecords := []technitium.Record{}
 	deleteRecords := []technitium.Record{}
 
@@ -116,7 +221,7 @@ func (s *Syncer) calculateChanges(existingRecords []technitium.Record, clientRec
 		if !ok {
 			deleteRecords = append(deleteRecords, record)
 		} else if !shouldUpdateRecord(record, clientRecord) {
-			s.logger.Info("record is up to date", "record", record.Name)
+			s.logger.Debug("record is up to date", "record", record.Name)
 			delete(clientRecords, record.Name)
 		}
 	}
@@ -125,7 +230,35 @@ func (s *Syncer) calculateChanges(existingRecords []technitium.Record, clientRec
 		addRecords = append(addRecords, cr)
 	}
 
-	return addRecords, deleteRecords
+	return changes{Add: addRecords, Delete: deleteRecords}
+}
+
+func (s *Syncer) processChanges(ctx context.Context, c changes) SyncResult {
+	result := SyncResult{}
+
+	for _, r := range c.Delete {
+		err := s.tc.DeleteRecord(ctx, s.config.SyncZone, r.Name, r.Type, *r.RData.IPAddress)
+		if err != nil {
+			s.logger.Error("error deleting record", "record", r.Name, "error", err)
+			result.DeleteFailed++
+		} else {
+			result.DeleteSuccess++
+			s.logger.Debug("deleted record", "record", r.Name)
+		}
+	}
+
+	for _, r := range c.Add {
+		err := s.tc.AddRecord(ctx, s.config.SyncZone, r.Name, *r.RData.IPAddress, r.TTL, r.Comments)
+		if err != nil {
+			s.logger.Error("error upserting record", "record", r.Name, "error", err)
+			result.AddFailed++
+		} else {
+			result.AddSuccess++
+			s.logger.Debug("upserted record", "record", r.Name)
+		}
+	}
+
+	return result
 }
 
 func filterTechnitiumRecordsByType(records []technitium.Record, typ string) []technitium.Record {
