@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/google/uuid"
@@ -23,6 +24,7 @@ type config struct {
 	TechnitiumAPIURL   string `env:"TECHNITIUM_API_URL"`
 	TechnitiumAPIToken string `env:"TECHNITIUM_API_TOKEN"`
 	SyncZone           string `env:"SYNC_ZONE"`
+	StateDir           string `env:"STATE_DIR" envDefault:"/var/lib/unifi-technitium-sync"`
 }
 
 func (c *config) String() string {
@@ -92,7 +94,20 @@ func run(ctx context.Context) error {
 	unifiClient := unifi.NewClient(config.UnifiAPIURL, config.UnifiAPIKey, config.UnifiSiteID)
 	technitiumClient := technitium.NewClient(config.TechnitiumAPIURL, config.TechnitiumAPIToken)
 
-	s := syncer.New(unifiClient, technitiumClient, config.SyncZone, logger)
+	syncerCfg := syncer.Config{
+		SyncZone:       config.SyncZone,
+		StateDir:       config.StateDir,
+		ClientWaitTime: time.Hour,
+	}
 
-	return s.Run(ctx)
+	s := syncer.New(unifiClient, technitiumClient, syncerCfg, logger)
+
+	result, err := s.Run(ctx)
+	if err != nil {
+		return fmt.Errorf("error running sync: %v", err)
+	}
+
+	logger.Info("Sync completed", "recordsUpserted", result.AddSuccess, "recordsUpsertedFailed", result.AddFailed, "recordsDeleted", result.DeleteSuccess, "recordsDeletedFailed", result.DeleteFailed)
+
+	return nil
 }

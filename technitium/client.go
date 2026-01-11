@@ -158,12 +158,10 @@ func doRequest[T any](ctx context.Context, c *Client, path string, params url.Va
 
 	fullURL := fmt.Sprintf("%s%s?%s", c.BaseURL, path, params.Encode())
 
-	req, err := http.NewRequest("GET", fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	req = req.WithContext(ctx)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
