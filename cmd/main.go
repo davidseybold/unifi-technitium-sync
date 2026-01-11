@@ -59,6 +59,8 @@ func run(ctx context.Context) error {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	logger = logger.With("runId", runId)
 
+	logger.Info("Starting sync", "unifiAPIURL", config.UnifiAPIURL, "technitiumAPIURL", config.TechnitiumAPIURL)
+
 	unifiClient := unifi.NewClient(config.UnifiAPIURL, config.UnifiAPIKey, config.UnifiSiteID)
 	technitiumClient := technitium.NewClient(config.TechnitiumAPIURL, config.TechnitiumAPIToken)
 
