@@ -63,7 +63,8 @@ func LoadConfig() (config, error) {
 
 func main() {
 	if err := run(context.Background()); err != nil {
-		panic(err)
+		os.Exit(1)
+		return
 	}
 }
 
@@ -112,6 +113,7 @@ func run(ctx context.Context) error {
 
 	result, err := s.Run(ctx)
 	if err != nil {
+		logger.Error("error running sync", "error", err)
 		return fmt.Errorf("error running sync: %v", err)
 	}
 
